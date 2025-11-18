@@ -1,0 +1,20 @@
+[project]
+name = "bdm"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "beautifulsoup4>=4.14.2",
+    "dotenv>=0.9.9",
+    "google>=3.0.0",
+    "google-generativeai>=0.8.5",
+    "matplotlib>=3.10.7",
+    "numpy>=2.3.4",
+    "pandas>=2.3.3",
+    "playwright>=1.56.0",
+    "pypdf>=6.1.3",
+    "pypdf2>=3.0.1",
+    "requests>=2.32.5",
+    "selenium>=4.38.0",
+]
