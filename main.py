@@ -1,153 +1,100 @@
-from dotenv import load_dotenv
-from scraper import get_rendered_html
-import tempfile
-import google.generativeai as genai
-import os
-import json
-import subprocess
-import re
-import json
-import ast
-import textwrap
-import sys
-import re
-import subprocess
-
-load_dotenv()
-
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+from langgraph.graph import StateGraph, END, START
+from langchain_core.rate_limiters import InMemoryRateLimiter
+from langgraph.prebuilt import ToolNode
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from tools import generate_and_run, get_rendered_html, download_file, post_request
+from typing import TypedDict, Annotated, List, Any
+from langchain.chat_models import init_chat_model
+from langgraph.graph.message import add_messages
+# -------------------------------------------------
+# STATE
+# -------------------------------------------------
+class AgentState(TypedDict):
+    messages: Annotated[List, add_messages]
 
 
-def extract_program(json_str: str) -> tuple[str, list[str]]:
-    json_str = re.sub(r"^```(?:json|python)?\s*", "", json_str.strip(), flags=re.IGNORECASE | re.MULTILINE)
-    json_str = re.sub(r"```$", "", json_str.strip(), flags=re.MULTILINE)
-    match = re.search(r'\{[\s\S]*\}', json_str)
+TOOLS = [generate_and_run, get_rendered_html, download_file, post_request]
 
-    if not match:
-        return "", []
 
-    try:
-        data = json.loads(match.group())
-        program = data.get("program", "")
-        dependencies = data.get("dependencies", [])
-        if not isinstance(dependencies, list):
-            dependencies = []
+# -------------------------------------------------
+# GEMINI LLM
+# -------------------------------------------------
+# NOTE: pip install langchain-google-genai
+# Make sure GOOGLE_API_KEY is in env
+rate_limiter = InMemoryRateLimiter(
+    requests_per_second=10/60,  
+    check_every_n_seconds=0.1,  
+    max_bucket_size=10  
+)
+llm = init_chat_model(
+   model_provider="google_genai",
+   model="gemini-2.5-flash",
+   rate_limiter=rate_limiter
+).bind_tools(TOOLS)   # <--- MAGIC: Gemini tool-calls come automatically
 
-        # --- Cleaning Stage ---
-        program = re.sub(r"^```(?:python|json)?\s*", "", program.strip(), flags=re.IGNORECASE | re.MULTILINE)
-        program = re.sub(r"```$", "", program.strip(), flags=re.MULTILINE)
 
-        program = program.replace("\r\n", "\n")
-
-        program = textwrap.dedent(program)
-
-        program = program.strip("\n").lstrip()  # <- This ensures first line starts flush left
-
-        try:
-            ast.parse(program)
-        except SyntaxError as e:
-            print(f"⚠️ SyntaxError detected (tolerated): {e}")
-
-        return program, dependencies
-
-    except json.JSONDecodeError:
-        return "", []
-
-PROMPT = """
-   Write a Python program that accomplishes the follows the following requirements strictly:
-   - It must be a **Python 3 program** that accomplishes the task described below.
-   - The program should be **self-contained** and executable directly (e.g., via `python main.py`).
-   - The program must define a variable named `answer` that holds the final computed result.
-   - The program should **not print intermediate or debug outputs**; it must only print the final result of `answer`.
-   - At the end of execution, the program must print only this block:
-     ```
-     FINAL_OUTPUT_START
-     <JSON-encoded value of 'answer'>
-     FINAL_OUTPUT_END
-     ```
-     Example:
-     ```
-     FINAL_OUTPUT_START
-     12345
-     FINAL_OUTPUT_END
-     ```
-   - If `answer` is a complex object (list, dict, etc.), it must be printed as a **JSON string** using `json.dumps(answer)`.
-   - If an exception occurs, catch it and print a single line containing the word “error” and the message (e.g., `print("error:", e)`) and stop the program immediately.
-   - Include a list variable called `dependencies` with all external libraries required (installable via `pip install <name>`).
-   - Use only the necessary dependencies, and prefer Python standard libraries when possible.
-
-    - Return the final output as a valid JSON object with the following structure:
-   {{
-     "program": "<The executable python program>",
-     "dependencies": ["list", "of", "required", "packages"]
-   }}
-   The task to be accomplished is as follows:
-
+# -------------------------------------------------
+# SYSTEM PROMPT
+# -------------------------------------------------
+SYSTEM_PROMPT = """
+You are a tool-using agent.
+Always call a tool when math or structured data is involved.
 """
 
+prompt = ChatPromptTemplate.from_messages([
+    ("system", SYSTEM_PROMPT),
+    MessagesPlaceholder(variable_name="messages")
+])
 
-def generateCode(request: str):
-    
-    model = genai.GenerativeModel("gemini-2.5-flash")
-    response = model.generate_content(
-        contents= PROMPT + request 
+llm_with_prompt = prompt | llm
+
+
+# -------------------------------------------------
+# AGENT NODE
+# -------------------------------------------------
+def agent_node(state: AgentState):
+    result = llm_with_prompt.invoke({"messages": state["messages"]})
+    return {"messages": state["messages"] + [result]}
+
+
+# -------------------------------------------------
+# GRAPH
+# -------------------------------------------------
+graph = StateGraph(AgentState)
+
+graph.add_node("agent", agent_node)
+graph.add_node("tools", ToolNode(TOOLS))
+
+
+def route(state):
+    last = state["messages"][-1]
+    if getattr(last, "tool_calls", None):
+        return "tools"
+
+    return END
+
+graph.add_edge(START, "agent")
+graph.add_edge("tools", "agent")
+graph.add_conditional_edges(
+    "agent",    
+    route       
+)
+
+app = graph.compile()
+
+
+# -------------------------------------------------
+# TEST
+# -------------------------------------------------
+if __name__ == "__main__":
+    out = app.invoke({
+        "messages": [{"role": "user", "content": """
+                      Do the task that is mentioned in
+                    https://tds-llm-analysis.s-anand.net/demo. Complete all the tasks until all are done. If my email was asked
+                      use "24f1001482@ds.study.iitm.ac.in" as placeholder. If the secret is asked use the following placeholder: "sai123".
+                      Use all the content in the webpage to complete the tasks. Make sure to download any files in the webpage and use them as needed.
+                      """}]},
+        config={"recursion_limit": 50},
     )
-    return extract_program(response.text)
 
-def executeCode(code: str, dependencies):
-    try:
-        for pkg in dependencies:
-            result = subprocess.run(["uv", "add",  pkg], capture_output=True, text=True, check=True)
-            print("Command output:")
-            print(result.stdout)
-    except subprocess.CalledProcessError as e:
-        print(f"Error executing command: {e}")
-        print(f"Stderr: {e.stderr}")
-
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
-        f.write(code)
-        f.flush()
-        result = subprocess.run(
-            [sys.executable, f.name],
-            capture_output=True,
-            text=True
-        )
-
-    if not result:
-        return {"Error": "While executing the code, no result was returned."}
-    stdout = result.stdout.strip()
-    stderr = result.stderr.strip()
-    if result.returncode != 0:
-        return {"error": f"error: {stderr}"}
-    match = re.search(r"FINAL_OUTPUT_START\s*(.*?)\s*FINAL_OUTPUT_END", stdout, re.S)
-    if match:
-        answer = match.group(1).strip()
-        return {"output": answer}
-
-    return {"output": stdout}
-
-
-def promptGenerator(question: str):
-    llm = genai.GenerativeModel("gemini-2.5-flash")
-    response = llm.generate_content(
-        contents = f"""
-            You are a html reading agent. You will be given the html content of a quiz webpage.
-            Your task is to read the content and extract the following information:
-            1. Task described in the quiz.
-            2. 
-            """
-    )
-    return response.text
-
-
-def main(request: str, prev: str = ""):
-    prompt = promptGenerator(request)
-    code, deps = generateCode(prompt)
-    result = executeCode(code, deps)
-    return result["output"] if "output" in result else "Some error occurred."
-
-request = """
-Visit the following url and do the task mentioned in the webpage. Also return the answer to me.
-https://tds-llm-analysis.s-anand.net/demo-audio?email=24f1001482@ds.study.iitm.ac.in
-"""
-print(main(request))
+    print(out["messages"][-1].content)
