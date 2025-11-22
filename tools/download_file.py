@@ -15,12 +15,17 @@ def download_file(url: str, filename: str) -> str:
     Returns:
         str: Full path to the saved file.
     """
-    response = requests.get(url, stream=True)
-    response.raise_for_status()
+    try:
+        response = requests.get(url, stream=True)
+        response.raise_for_status()
+        directory_name = "LLMFiles"
+        os.makedirs(directory_name, exist_ok=True)
+        path = os.path.join(directory_name, filename)
+        with open(path, "wb") as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
 
-    with open(os.path.join("LLMFiles", filename), "wb") as f:
-        for chunk in response.iter_content(chunk_size=8192):
-            if chunk:
-                f.write(chunk)
-
-    return filename
+        return filename
+    except Exception as e:
+        return f"Error downloading file: {str(e)}"

@@ -28,19 +28,19 @@ def get_rendered_html(url: str) -> str:
     """
     # ... existing code ...
     print("\nFetching and rendering:", url)
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
 
-        # Load the page (let JS execute)
-        page.goto(url, wait_until="networkidle")
+            # Load the page (let JS execute)
+            page.goto(url, wait_until="networkidle")
 
-        # Extract rendered HTML
-        content = page.content()
+            # Extract rendered HTML
+            content = page.content()
 
-        browser.close()
-        soup = BeautifulSoup(content, "html.parser")
-        for script in soup(["script"]):
-            script.extract()
-        return str(soup)
+            browser.close()
+            return content
 
+    except Exception as e:
+        return f"Error fetching/rendering page: {str(e)}"

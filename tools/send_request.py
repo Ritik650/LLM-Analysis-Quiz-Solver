@@ -1,5 +1,6 @@
 from langchain_core.tools import tool
 import requests
+import json
 from typing import Any, Dict, Optional
 
 @tool
@@ -27,14 +28,14 @@ def post_request(url: str, payload: Dict[str, Any], headers: Optional[Dict[str, 
     """
     headers = headers or {"Content-Type": "application/json"}
     try:
-        print(f"\nSending \n{payload}\n to this url: {url}")
+        print(f"\nSending \n{json.dumps(payload, indent=4)}\n to url: {url}")
         response = requests.post(url, json=payload, headers=headers)
 
         # Raise on 4xx/5xx
         response.raise_for_status()
 
         # Try to return JSON, fallback to raw text
-        print("Response: \n", response.json(), '\n')
+        print("Response: \n", json.dumps(response.json(), indent=4), '\n')
         return response.json()
     except ValueError:
         return response.text

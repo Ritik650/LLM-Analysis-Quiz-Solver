@@ -15,4 +15,5 @@ dependencies = [
     "jsonpatch>=1.33",
     "python-dotenv>=1.2.1",
     "pandas>=2.3.3",
+    "fastapi>=0.121.3",
 ]
