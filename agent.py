@@ -9,6 +9,9 @@ from langgraph.graph.message import add_messages
 import os
 from dotenv import load_dotenv
 load_dotenv()
+
+EMAIL = os.getenv("EMAIL")
+SECRET = os.getenv("SECRET")
 # -------------------------------------------------
 # STATE
 # -------------------------------------------------
@@ -47,10 +50,13 @@ REMEMBER:
  - You can use all the tools at your disposal to complete the tasks.
  - Make sure to read all the contents in the webpage to find all the information needed to complete the task.
  - You can download all the files in the webpage and use them as needed.
+ - Keep continuing as long as you get a new task url in the response.
+ - **DO NOT** stop prematurely. Only stop when there is no new task url in the response.
 
+Once you have completed all the tasks, respond with "END" to indicate that you are done.
 Some tasks require the following information that you must:
-- Email: {os.getenv("EMAIL")}
-- Secret: {os.getenv("SECRET")}
+- Email: {EMAIL}
+- Secret: {SECRET}
 """
 
 prompt = ChatPromptTemplate.from_messages([
@@ -74,9 +80,28 @@ def agent_node(state: AgentState):
 # -------------------------------------------------
 def route(state):
     last = state["messages"][-1]
-    if getattr(last, "tool_calls", None):
+
+    # support both objects (with attributes) and plain dicts
+    tool_calls = None
+    if hasattr(last, "tool_calls"):
+        tool_calls = getattr(last, "tool_calls", None)
+    elif isinstance(last, dict):
+        tool_calls = last.get("tool_calls")
+
+    if tool_calls:
         return "tools"
-    return END
+
+    # get content robustly
+    content = None
+    if hasattr(last, "content"):
+        content = getattr(last, "content", None)
+    elif isinstance(last, dict):
+        content = last.get("content")
+
+    if isinstance(content, str) and content.strip() == "END":
+        return END
+
+    return "agent"
 graph = StateGraph(AgentState)
 
 graph.add_node("agent", agent_node)
@@ -103,4 +128,5 @@ def run_agent(url: str) -> str:
         "messages": [{"role": "user", "content": url}]},
         config={"recursion_limit": 50},
     )
-    return out["messages"][-1]
+    print(out["messages"][-1].content)
+    print("Tasks completed succesfully")

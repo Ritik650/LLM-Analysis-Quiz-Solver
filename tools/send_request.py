@@ -11,7 +11,7 @@ def post_request(url: str, payload: Dict[str, Any], headers: Optional[Dict[str, 
     This function is designed for LangGraph applications, where it can be wrapped
     as a Tool or used inside a Runnable to call external APIs, webhooks, or backend
     services during graph execution.
-
+    REMEMBER: This a blocking function so it may take a while to return. Wait for the response.
     Args:
         url (str): The endpoint to send the POST request to.
         payload (Dict[str, Any]): The JSON-serializable request body.
@@ -28,15 +28,16 @@ def post_request(url: str, payload: Dict[str, Any], headers: Optional[Dict[str, 
     """
     headers = headers or {"Content-Type": "application/json"}
     try:
-        print(f"\nSending \n{json.dumps(payload, indent=4)}\n to url: {url}")
+        print(f"\nSending Answer \n{json.dumps(payload, indent=4)}\n to url: {url}")
         response = requests.post(url, json=payload, headers=headers)
 
         # Raise on 4xx/5xx
         response.raise_for_status()
 
         # Try to return JSON, fallback to raw text
-        print("Response: \n", json.dumps(response.json(), indent=4), '\n')
-        return response.json()
+        data = response.json()
+        print("Got the response: \n", json.dumps(data, indent=4), '\n')
+        return data
     except ValueError:
         return response.text
     except Exception as e:

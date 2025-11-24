@@ -43,6 +43,7 @@ def run_code(code: str) -> dict:
     """
     try: 
         filename = "runner.py"
+        os.makedirs("LLMFiles", exist_ok=True)
         with open(os.path.join("LLMFiles", filename), "w") as f:
             f.write(code)
 
