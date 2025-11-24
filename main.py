@@ -3,6 +3,7 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import HTTPException
 from agent import run_agent
 from dotenv import load_dotenv
+import uvicorn
 import os 
 load_dotenv()
 
@@ -28,3 +29,7 @@ async def solve(request: Request, background_tasks: BackgroundTasks):
     background_tasks.add_task(run_agent, url)
 
     return JSONResponse(status_code=200, content={"status": "ok"})
+
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
