@@ -16,7 +16,11 @@ RUN pip install uv
 
 # --- Copy app to container ---
 WORKDIR /app
+
 COPY . .
+
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONIOENCODING=utf-8
 
 # --- Install project dependencies using uv ---
 RUN uv sync --frozen
