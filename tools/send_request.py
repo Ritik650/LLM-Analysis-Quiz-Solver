@@ -41,6 +41,10 @@ def post_request(url: str, payload: Dict[str, Any], headers: Optional[Dict[str, 
         correct = data.get("correct")
         if not correct and delay < 180:
             del data["url"]
+        if delay >= 180:
+            data = {
+                "url": data.get("url")
+            }
         print("Got the response: \n", json.dumps(data, indent=4), '\n')
         return data
     except requests.HTTPError as e:

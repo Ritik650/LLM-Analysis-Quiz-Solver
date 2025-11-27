@@ -5,7 +5,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from agent import run_agent
 from dotenv import load_dotenv
 import uvicorn
-import os, time
+import os
+import time
+
 load_dotenv()
 
 EMAIL = os.getenv("EMAIL") 
