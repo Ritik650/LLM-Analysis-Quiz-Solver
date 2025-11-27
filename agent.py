@@ -12,6 +12,7 @@ load_dotenv()
 
 EMAIL = os.getenv("EMAIL")
 SECRET = os.getenv("SECRET")
+RECURSION_LIMIT =  5000
 # -------------------------------------------------
 # STATE
 # -------------------------------------------------
@@ -149,7 +150,7 @@ app = graph.compile()
 def run_agent(url: str) -> str:
     app.invoke({
         "messages": [{"role": "user", "content": url}]},
-        config={"recursion_limit": 200},
+        config={"recursion_limit": RECURSION_LIMIT},
     )
     print("Tasks completed succesfully")
 
