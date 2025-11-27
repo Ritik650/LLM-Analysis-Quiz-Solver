@@ -26,9 +26,9 @@ TOOLS = [run_code, get_rendered_html, download_file, post_request, add_dependenc
 # GEMINI LLM
 # -------------------------------------------------
 rate_limiter = InMemoryRateLimiter(
-    requests_per_second=10/60,  
-    check_every_n_seconds=0.1,  
-    max_bucket_size=10  
+    requests_per_second=9/60,  
+    check_every_n_seconds=1,  
+    max_bucket_size=9  
 )
 llm = init_chat_model(
    model_provider="google_genai",
@@ -41,22 +41,47 @@ llm = init_chat_model(
 # SYSTEM PROMPT
 # -------------------------------------------------
 SYSTEM_PROMPT = f"""
-You are a quiz solving agent. You will be a given a url to a webpage that contains a task. 
-The task may involve finding an answer and sending a request to a url specified in the webpage with a payload of structure mentioned in the webpage.
-Once you send the request, you will get a response. The response will contain either whether your answer was correct or not, and the reason for it.
-It may also contain a new task url to visit and repeat the process, or it may contain the same task url in some cases.
+You are an autonomous quiz-solving agent.
 
-REMEMBER:
- - You can use all the tools at your disposal to complete the tasks.
- - Make sure to read all the contents in the webpage to find all the information needed to complete the task.
- - You can download all the files in the webpage and use them as needed.
- - Keep continuing as long as you get a new task url in the response.
- - **DO NOT** stop prematurely. Only stop when there is no new task url in the response.
+Your job is to:
+1. Load the quiz page from the given URL.
+2. Extract ALL instructions, required parameters, submission rules, and the submit endpoint.
+3. Solve the task exactly as required.
+4. Submit the answer ONLY to the endpoint specified on the current page (never make up URLs).
+5. Read the server response and:
+   - If it contains a new quiz URL → fetch it immediately and continue.
+   - If no new URL is present → return "END".
 
-Once you have completed all the tasks, respond with "END" to indicate that you are done.
-Some tasks require the following information that you must:
+STRICT RULES — FOLLOW EXACTLY:
+
+GENERAL RULES:
+- NEVER stop early. Continue solving tasks until no new URL is provided.
+- NEVER hallucinate URLs, endpoints, fields, values, or JSON structure.
+- NEVER shorten or modify URLs. Always submit the full URL.
+- NEVER re-submit unless the server explicitly allows or it's within the 3-minute limit.
+- ALWAYS inspect the server response before deciding what to do next.
+- ALWAYS use the tools provided to fetch, scrape, download, render HTML, or send requests.
+
+TIME LIMIT RULES:
+- Each task has a hard 3-minute limit.
+- The server response includes a "delay" field indicating elapsed time.
+- If your answer is wrong retry again.
+
+STOPPING CONDITION:
+- Only return "END" when a server response explicitly contains NO new URL.
+- DO NOT return END under any other condition.
+
+ADDITIONAL INFORMATION YOU MUST INCLUDE WHEN REQUIRED:
 - Email: {EMAIL}
 - Secret: {SECRET}
+
+YOUR JOB:
+- Follow pages exactly.
+- Extract data reliably.
+- Never guess.
+- Submit correct answers.
+- Continue until no new URL.
+- Then respond with: END
 """
 
 prompt = ChatPromptTemplate.from_messages([
@@ -80,7 +105,6 @@ def agent_node(state: AgentState):
 # -------------------------------------------------
 def route(state):
     last = state["messages"][-1]
-
     # support both objects (with attributes) and plain dicts
     tool_calls = None
     if hasattr(last, "tool_calls"):
@@ -90,7 +114,6 @@ def route(state):
 
     if tool_calls:
         return "tools"
-
     # get content robustly
     content = None
     if hasattr(last, "content"):
@@ -100,7 +123,8 @@ def route(state):
 
     if isinstance(content, str) and content.strip() == "END":
         return END
-
+    if isinstance(content, list) and content[0].get("text").strip() == "END":
+        return END
     return "agent"
 graph = StateGraph(AgentState)
 
@@ -122,12 +146,10 @@ app = graph.compile()
 # -------------------------------------------------
 # TEST
 # -------------------------------------------------
-url = "https://tds-llm-analysis.s-anand.net/demo"
 def run_agent(url: str) -> str:
-    out = app.invoke({
+    app.invoke({
         "messages": [{"role": "user", "content": url}]},
-        config={"recursion_limit": 50},
+        config={"recursion_limit": 200},
     )
-    print(out["messages"][-1].content)
     print("Tasks completed succesfully")
 

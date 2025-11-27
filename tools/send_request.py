@@ -36,9 +36,25 @@ def post_request(url: str, payload: Dict[str, Any], headers: Optional[Dict[str, 
 
         # Try to return JSON, fallback to raw text
         data = response.json()
+        delay = data.get("delay", 0)
+        delay = delay if isinstance(delay, (int, float)) else 0
+        correct = data.get("correct")
+        if not correct and delay < 180:
+            del data["url"]
         print("Got the response: \n", json.dumps(data, indent=4), '\n')
         return data
-    except ValueError:
-        return response.text
+    except requests.HTTPError as e:
+        # Extract server’s error response
+        err_resp = e.response
+
+        try:
+            err_data = err_resp.json()
+        except ValueError:
+            err_data = err_resp.text
+
+        print("HTTP Error Response:\n", err_data)
+        return err_data
+
     except Exception as e:
-        return e
+        print("Unexpected error:", e)
+        return str(e)
