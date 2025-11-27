@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Request, BackgroundTasks
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from agent import run_agent
 from dotenv import load_dotenv
 import uvicorn
@@ -11,6 +12,13 @@ EMAIL = os.getenv("EMAIL")
 SECRET = os.getenv("SECRET")
 
 app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # or specific domains
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 @app.post("/solve")
 async def solve(request: Request, background_tasks: BackgroundTasks):
     try:
@@ -26,6 +34,7 @@ async def solve(request: Request, background_tasks: BackgroundTasks):
     
     if secret != SECRET:
         raise HTTPException(status_code=403, detail="Invalid secret")
+    print("Verified starting the task...")
     background_tasks.add_task(run_agent, url)
 
     return JSONResponse(status_code=200, content={"status": "ok"})
