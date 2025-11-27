@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from agent import run_agent
 from dotenv import load_dotenv
 import uvicorn
-import os 
+import os, time
 load_dotenv()
 
 EMAIL = os.getenv("EMAIL") 
@@ -19,6 +19,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+START_TIME = time.time()
+@app.get("/healthz")
+def healthz():
+    """Simple liveness check."""
+    return {
+        "status": "ok",
+        "uptime_seconds": int(time.time() - START_TIME)
+    }
+
 @app.post("/solve")
 async def solve(request: Request, background_tasks: BackgroundTasks):
     try:
