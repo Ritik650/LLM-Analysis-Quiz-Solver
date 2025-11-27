@@ -1,4 +1,3 @@
-<!--
 ---
 title: LLM Analysis Quiz Solver
 emoji: 🏃
@@ -8,7 +7,7 @@ sdk: docker
 pinned: false
 app_port: 7860
 ---
--->
+
 # LLM Analysis - Autonomous Quiz Solver Agent
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
