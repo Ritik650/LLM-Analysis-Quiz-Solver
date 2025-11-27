@@ -309,6 +309,7 @@ docker run -p 7860:7860 \
    - `SECRET`
    - `GOOGLE_API_KEY`
 4. The Space will automatically build and deploy
+5. The url will be `https://<username>-<space-name>.hf.space`
 
 ## 🧠 How It Works
 
