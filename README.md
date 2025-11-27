@@ -1,10 +1,10 @@
 ---
-title: LLM-Analysis
-emoji: 🧠
+title: LLM Analysis
+emoji: 🐳
 colorFrom: blue
 colorTo: purple
-sdk: docker
-pinned: false
+sdk: docker # Change this line
+app_port: 7860 #
 ---
 
 # LLM Analysis (Docker Space)
