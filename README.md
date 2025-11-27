@@ -119,21 +119,23 @@ cd LLM-Analysis-TDS-Project-2
 
 #### Option A: Using `uv` (Recommended)
 
-```bash
-# Install uv if you don't have it
+
+Ensure you have uv installed, then sync the project:
+
+```
+# Install uv if you haven't already  
 pip install uv
 
-# Create virtual environment and install dependencies
-uv venv
-.\.venv\Scripts\activate  # Windows
-# source .venv/bin/activate  # macOS/Linux
-
-# Install project in editable mode
-uv pip install -e .
-
-# Install Playwright browsers
-playwright install chromium
+# Sync dependencies  
+uv sync
+uv run playwright install chromium
 ```
+
+Start the FastAPI server:
+```
+uv run main.py
+```
+The server will start at ```http://0.0.0.0:7860```.
 
 #### Option B: Using `pip`
 
