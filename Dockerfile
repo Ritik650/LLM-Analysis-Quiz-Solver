@@ -10,6 +10,8 @@ RUN apt-get update && apt-get install -y \
     libxfixes3 libpango-1.0-0 libcairo2 \
     # Tesseract OCR engine
     tesseract-ocr \
+    # FFmpeg for audio processing (pydub)
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # --- Install Playwright + Chromium ---
