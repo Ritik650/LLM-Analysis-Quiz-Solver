@@ -8,7 +8,7 @@ from tools import (
     run_code, add_dependencies, ocr_image_tool, transcribe_audio, encode_image_to_base64
 )
 from typing import TypedDict, Annotated, List
-from langchain_core.messages import trim_messages
+from langchain_core.messages import trim_messages, HumanMessage
 from langchain.chat_models import init_chat_model
 from langgraph.graph.message import add_messages
 import os
@@ -19,7 +19,7 @@ EMAIL = os.getenv("EMAIL")
 SECRET = os.getenv("SECRET")
 
 RECURSION_LIMIT = 5000
-MAX_TOKENS = 180000
+MAX_TOKENS = 60000
 
 
 # -------------------------------------------------
@@ -36,12 +36,12 @@ TOOLS = [
 
 
 # -------------------------------------------------
-# LLM INIT (NO SYSTEM PROMPT HERE)
+# LLM INIT
 # -------------------------------------------------
 rate_limiter = InMemoryRateLimiter(
-    requests_per_second=7 / 60,
+    requests_per_second=4 / 60,
     check_every_n_seconds=1,
-    max_bucket_size=7
+    max_bucket_size=4
 )
 
 llm = init_chat_model(
@@ -51,9 +51,8 @@ llm = init_chat_model(
 ).bind_tools(TOOLS)
 
 
-
 # -------------------------------------------------
-# SYSTEM PROMPT (WILL BE INSERTED ONLY ONCE)
+# SYSTEM PROMPT
 # -------------------------------------------------
 SYSTEM_PROMPT = f"""
 You are an autonomous quiz-solving agent.
@@ -79,31 +78,55 @@ Rules:
 
 
 # -------------------------------------------------
+# NEW NODE: HANDLE MALFORMED JSON
+# -------------------------------------------------
+def handle_malformed_node(state: AgentState):
+    """
+    If the LLM generates invalid JSON, this node sends a correction message
+    so the LLM can try again.
+    """
+    print("--- DETECTED MALFORMED JSON. ASKING AGENT TO RETRY ---")
+    return {
+        "messages": [
+            {
+                "role": "user", 
+                "content": "SYSTEM ERROR: Your last tool call was Malformed (Invalid JSON). Please rewrite the code and try again. Ensure you escape newlines and quotes correctly inside the JSON."
+            }
+        ]
+    }
+
+
+# -------------------------------------------------
 # AGENT NODE
 # -------------------------------------------------
 def agent_node(state: AgentState):
-    # time-handling
+    # --- TIME HANDLING START ---
     cur_time = time.time()
     cur_url = os.getenv("url")
-    prev_time = url_time[cur_url]
-    offset = os.getenv("offset")
+    
+    # SAFE GET: Prevents crash if url is None or not in dict
+    prev_time = url_time.get(cur_url) 
+    offset = os.getenv("offset", "0")
+
     if prev_time is not None:
         prev_time = float(prev_time)
         diff = cur_time - prev_time
 
         if diff >= 180 or (offset != "0" and (cur_time - float(offset)) > 90):
-            print("Timeout exceeded — instructing LLM to purposely submit wrong answer.", diff, "Offset=", offset)
+            print(f"Timeout exceeded ({diff}s) — instructing LLM to purposely submit wrong answer.")
 
             fail_instruction = """
-            You have exceeded the time limit for this task (over 130 seconds).
+            You have exceeded the time limit for this task (over 180 seconds).
             Immediately call the `post_request` tool and submit a WRONG answer for the CURRENT quiz.
             """
 
-            # LLM will figure out the right endpoint + JSON structure itself
-            result = llm.invoke([
-                {"role": "user", "content": fail_instruction}
-            ])
+            # Using HumanMessage (as you correctly implemented)
+            fail_msg = HumanMessage(content=fail_instruction)
+
+            # We invoke the LLM immediately with this new instruction
+            result = llm.invoke(state["messages"] + [fail_msg])
             return {"messages": [result]}
+    # --- TIME HANDLING END ---
 
     trimmed_messages = trim_messages(
         messages=state["messages"],
@@ -111,28 +134,48 @@ def agent_node(state: AgentState):
         strategy="last",
         include_system=True,
         start_on="human",
-        token_counter=llm,  # Use the LLM to count actual tokens, not just list length
+        token_counter=llm, 
     )
+    
+    # Better check: Does it have a HumanMessage?
+    has_human = any(msg.type == "human" for msg in trimmed_messages)
+    
+    if not has_human:
+        print("WARNING: Context was trimmed too far. Injecting state reminder.")
+        # We remind the agent of the current URL from the environment
+        current_url = os.getenv("url", "Unknown URL")
+        reminder = HumanMessage(content=f"Context cleared due to length. Continue processing URL: {current_url}")
+        
+        # We append this to the trimmed list (temporarily for this invoke)
+        trimmed_messages.append(reminder)
+    # ----------------------------------------
+
+    print(f"--- INVOKING AGENT (Context: {len(trimmed_messages)} items) ---")
     
     result = llm.invoke(trimmed_messages)
 
     return {"messages": [result]}
 
+
 # -------------------------------------------------
-# ROUTE LOGIC (YOURS WITH MINOR SAFETY IMPROVES)
+# ROUTE LOGIC (UPDATED FOR MALFORMED CALLS)
 # -------------------------------------------------
 def route(state):
     last = state["messages"][-1]
-    # print("=== ROUTE DEBUG: last message type ===")
+    
+    # 1. CHECK FOR MALFORMED FUNCTION CALLS
+    if "finish_reason" in last.response_metadata:
+        if last.response_metadata["finish_reason"] == "MALFORMED_FUNCTION_CALL":
+            return "handle_malformed"
 
+    # 2. CHECK FOR VALID TOOLS
     tool_calls = getattr(last, "tool_calls", None)
-
     if tool_calls:
         print("Route → tools")
         return "tools"
 
+    # 3. CHECK FOR END
     content = getattr(last, "content", None)
-
     if isinstance(content, str) and content.strip() == "END":
         return END
 
@@ -144,27 +187,34 @@ def route(state):
     return "agent"
 
 
-
 # -------------------------------------------------
 # GRAPH
 # -------------------------------------------------
 graph = StateGraph(AgentState)
 
+# Add Nodes
+graph.add_node("agent", agent_node)
 graph.add_node("tools", ToolNode(TOOLS))
+graph.add_node("handle_malformed", handle_malformed_node) # Add the repair node
 
+# Add Edges
 graph.add_edge(START, "agent")
 graph.add_edge("tools", "agent")
-graph.add_conditional_edges("agent", route)
-robust_retry = {
-    "initial_interval": 1,
-    "backoff_factor": 2,
-    "max_interval": 60,
-    "max_attempts": 10
-}
+graph.add_edge("handle_malformed", "agent") # Retry loop
 
-graph.add_node("agent", agent_node, retry=robust_retry)
+# Conditional Edges
+graph.add_conditional_edges(
+    "agent", 
+    route,
+    {
+        "tools": "tools",
+        "agent": "agent",
+        "handle_malformed": "handle_malformed", # Map the new route
+        END: END
+    }
+)
+
 app = graph.compile()
-
 
 
 # -------------------------------------------------

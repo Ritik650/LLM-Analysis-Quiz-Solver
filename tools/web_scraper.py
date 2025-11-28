@@ -22,7 +22,9 @@ def get_rendered_html(url: str) -> dict:
             # Parse images
             soup = BeautifulSoup(content, "html.parser")
             imgs = [urljoin(url, img["src"]) for img in soup.find_all("img", src=True)]
-
+            if len(content) > 300000:
+                    print("Warning: HTML too large, truncating...")
+                    content = content[:300000] + "... [TRUNCATED DUE TO SIZE]"
             return {
                 "html": content,
                 "images": imgs,

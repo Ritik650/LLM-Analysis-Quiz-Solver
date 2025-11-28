@@ -58,27 +58,28 @@ def post_request(url: str, payload: Dict[str, Any], headers: Optional[Dict[str, 
         # Try to return JSON, fallback to raw text
         data = response.json()
         print("Got the response: \n", json.dumps(data, indent=4), '\n')
-        if "message" in data:
-            del data["message"]
-
-        delay = data.get("delay", 0)
-        delay = delay if isinstance(delay, (int, float)) else 0
-
+        
+        delay = time.time() - url_time.get(cur_url, time.time())
+        print(delay)
         next_url = data.get("url") 
+        if not next_url:
+            return "Tasks completed"
         if next_url not in url_time:
             url_time[next_url] = time.time()
 
         correct = data.get("correct")
         if not correct:
             cur_time = time.time()
-            prev = url_time[next_url]
+            prev = url_time.get(next_url, time.time())
             if cache[cur_url] >= retry_limit or delay >= 180 or (prev != "0" and (cur_time - float(prev)) > 90): # Shouldn't retry
+                print("Not retrying, moving on to the next question")
                 data = {"url": data.get("url", "")} 
             else: # Retry
-                os.environ["offset"] = str(url_time[next_url])
+                os.environ["offset"] = str(url_time.get(next_url, time.time()))
+                print("Retrying..")
                 data["url"] = cur_url
                 data["message"] = "Retry Again!" 
-        print("Formatted: '\n", json.dumps(data, indent=4), '\n')
+        print("Formatted: \n", json.dumps(data, indent=4), '\n')
         forward_url = data.get("url", "")
         os.environ["url"] = forward_url 
         if forward_url == next_url:

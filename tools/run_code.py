@@ -55,7 +55,10 @@ def run_code(code: str) -> dict:
             cwd="LLMFiles"
         )
         stdout, stderr = proc.communicate()
-
+        if len(stdout) >= 10000:
+            return stdout[:10000] + "...truncated due to large size"
+        if len(stderr) >= 10000:
+            return stderr[:10000] + "...truncated due to large size"
         # --- Step 4: Return everything ---
         return {
             "stdout": stdout,
