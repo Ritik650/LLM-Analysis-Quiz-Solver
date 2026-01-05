@@ -8,5 +8,13 @@ wheels/
 .env
 # Virtual environments
 .venv
-tests
+# Runtime artifacts
 LLMFiles
+data/
+*.db
+*.log
+
+# Frontend
+frontend/node_modules
+frontend/dist
+frontend/.env.local
