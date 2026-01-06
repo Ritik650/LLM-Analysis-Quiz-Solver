@@ -28,8 +28,12 @@ COPY . .
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONIOENCODING=utf-8
 
+# Persisted run history (SQLite fallback when DATABASE_URL is unset)
+RUN mkdir -p /app/data
+
 # --- Install project dependencies using uv ---
-RUN uv sync --frozen
+# The postgres extra pulls psycopg2-binary so DATABASE_URL can point at Supabase.
+RUN uv sync --frozen --extra postgres
 
 # HuggingFace Spaces exposes port 7860
 EXPOSE 7860
