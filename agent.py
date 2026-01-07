@@ -1,25 +1,53 @@
-from langgraph.graph import StateGraph, END, START
-from shared_store import url_time
-import time
-from langchain_core.rate_limiters import InMemoryRateLimiter
-from langgraph.prebuilt import ToolNode
-from tools import (
-    get_rendered_html, download_file, post_request,
-    run_code, add_dependencies, ocr_image_tool, transcribe_audio, encode_image_to_base64
-)
-from typing import TypedDict, Annotated, List
-from langchain_core.messages import trim_messages, HumanMessage
-from langchain.chat_models import init_chat_model
-from langgraph.graph.message import add_messages
+"""
+LangGraph orchestrator.
+
+Refactored from the original single-module script so that:
+  * the LLM is built by a factory (`build_llm`) and can be injected — tests and
+    the eval harness pass a deterministic FakeChatModel instead of Gemini;
+  * the graph is built by `build_app(llm)` so any LLM can drive it;
+  * `run_agent` threads a `run_id` + LangChain `callbacks` into `app.invoke`;
+  * `run_agent_instrumented` wraps a run with an SSE callback handler + metrics
+    and emits start/final/done events — shared by the API and the eval harness.
+
+The node/route logic (timeout handling, malformed-JSON repair, message
+trimming, END detection) is preserved from the original implementation.
+"""
+from __future__ import annotations
+
 import os
-from dotenv import load_dotenv
-load_dotenv()
+import time
+from dataclasses import dataclass
+from typing import Annotated, List, TypedDict
 
-EMAIL = os.getenv("EMAIL")
-SECRET = os.getenv("SECRET")
+from langchain.chat_models import init_chat_model
+from langchain_core.messages import HumanMessage, trim_messages
+from langchain_core.rate_limiters import InMemoryRateLimiter
+from langgraph.graph import END, START, StateGraph
+from langgraph.graph.message import add_messages
+from langgraph.prebuilt import ToolNode
 
-RECURSION_LIMIT = 5000
-MAX_TOKENS = 60000
+from config import get_settings
+from observability.callbacks import SSECallbackHandler
+from observability.events import event_bus
+from observability.metrics import RunMetrics
+from shared_store import url_time
+from tools import (
+    add_dependencies,
+    download_file,
+    encode_image_to_base64,
+    get_rendered_html,
+    ocr_image_tool,
+    post_request,
+    run_code,
+    transcribe_audio,
+)
+
+settings = get_settings()
+EMAIL = settings.email
+SECRET = settings.secret
+
+RECURSION_LIMIT = settings.recursion_limit
+MAX_TOKENS = settings.max_tokens
 
 
 # -------------------------------------------------
@@ -36,19 +64,21 @@ TOOLS = [
 
 
 # -------------------------------------------------
-# LLM INIT
+# LLM FACTORY
 # -------------------------------------------------
-rate_limiter = InMemoryRateLimiter(
-    requests_per_second=4 / 60,
-    check_every_n_seconds=1,
-    max_bucket_size=4
-)
-
-llm = init_chat_model(
-    model_provider="google_genai",
-    model="gemini-2.5-flash",
-    rate_limiter=rate_limiter
-).bind_tools(TOOLS)
+def build_llm(model: str | None = None):
+    """Build the tool-bound Gemini chat model. Injectable for tests/eval."""
+    rate_limiter = InMemoryRateLimiter(
+        requests_per_second=4 / 60,
+        check_every_n_seconds=1,
+        max_bucket_size=4,
+    )
+    llm = init_chat_model(
+        model_provider="google_genai",
+        model=model or settings.gemini_model,
+        rate_limiter=rate_limiter,
+    )
+    return llm.bind_tools(TOOLS)
 
 
 # -------------------------------------------------
@@ -78,103 +108,83 @@ Rules:
 
 
 # -------------------------------------------------
-# NEW NODE: HANDLE MALFORMED JSON
+# NODES (factory closes over the injected llm)
 # -------------------------------------------------
 def handle_malformed_node(state: AgentState):
-    """
-    If the LLM generates invalid JSON, this node sends a correction message
-    so the LLM can try again.
-    """
+    """Ask the LLM to retry after an invalid tool-call (malformed JSON)."""
     print("--- DETECTED MALFORMED JSON. ASKING AGENT TO RETRY ---")
     return {
         "messages": [
             {
-                "role": "user", 
-                "content": "SYSTEM ERROR: Your last tool call was Malformed (Invalid JSON). Please rewrite the code and try again. Ensure you escape newlines and quotes correctly inside the JSON."
+                "role": "user",
+                "content": "SYSTEM ERROR: Your last tool call was Malformed (Invalid JSON). Please rewrite the code and try again. Ensure you escape newlines and quotes correctly inside the JSON.",
             }
         ]
     }
 
 
-# -------------------------------------------------
-# AGENT NODE
-# -------------------------------------------------
-def agent_node(state: AgentState):
-    # --- TIME HANDLING START ---
-    cur_time = time.time()
-    cur_url = os.getenv("url")
-    
-    # SAFE GET: Prevents crash if url is None or not in dict
-    prev_time = url_time.get(cur_url) 
-    offset = os.getenv("offset", "0")
+def make_agent_node(llm):
+    def agent_node(state: AgentState):
+        # --- TIME HANDLING START ---
+        cur_time = time.time()
+        cur_url = os.getenv("url")
 
-    if prev_time is not None:
-        prev_time = float(prev_time)
-        diff = cur_time - prev_time
+        prev_time = url_time.get(cur_url)
+        offset = os.getenv("offset", "0")
 
-        if diff >= 180 or (offset != "0" and (cur_time - float(offset)) > 90):
-            print(f"Timeout exceeded ({diff}s) — instructing LLM to purposely submit wrong answer.")
+        if prev_time is not None:
+            prev_time = float(prev_time)
+            diff = cur_time - prev_time
 
-            fail_instruction = """
-            You have exceeded the time limit for this task (over 180 seconds).
-            Immediately call the `post_request` tool and submit a WRONG answer for the CURRENT quiz.
-            """
+            if diff >= 180 or (offset != "0" and (cur_time - float(offset)) > 90):
+                print(f"Timeout exceeded ({diff}s) — instructing LLM to purposely submit wrong answer.")
+                fail_instruction = """
+                You have exceeded the time limit for this task (over 180 seconds).
+                Immediately call the `post_request` tool and submit a WRONG answer for the CURRENT quiz.
+                """
+                fail_msg = HumanMessage(content=fail_instruction)
+                result = llm.invoke(state["messages"] + [fail_msg])
+                return {"messages": [result]}
+        # --- TIME HANDLING END ---
 
-            # Using HumanMessage (as you correctly implemented)
-            fail_msg = HumanMessage(content=fail_instruction)
+        trimmed_messages = trim_messages(
+            messages=state["messages"],
+            max_tokens=MAX_TOKENS,
+            strategy="last",
+            include_system=True,
+            start_on="human",
+            token_counter=llm,
+        )
 
-            # We invoke the LLM immediately with this new instruction
-            result = llm.invoke(state["messages"] + [fail_msg])
-            return {"messages": [result]}
-    # --- TIME HANDLING END ---
+        has_human = any(msg.type == "human" for msg in trimmed_messages)
+        if not has_human:
+            print("WARNING: Context was trimmed too far. Injecting state reminder.")
+            current_url = os.getenv("url", "Unknown URL")
+            reminder = HumanMessage(content=f"Context cleared due to length. Continue processing URL: {current_url}")
+            trimmed_messages.append(reminder)
 
-    trimmed_messages = trim_messages(
-        messages=state["messages"],
-        max_tokens=MAX_TOKENS,
-        strategy="last",
-        include_system=True,
-        start_on="human",
-        token_counter=llm, 
-    )
-    
-    # Better check: Does it have a HumanMessage?
-    has_human = any(msg.type == "human" for msg in trimmed_messages)
-    
-    if not has_human:
-        print("WARNING: Context was trimmed too far. Injecting state reminder.")
-        # We remind the agent of the current URL from the environment
-        current_url = os.getenv("url", "Unknown URL")
-        reminder = HumanMessage(content=f"Context cleared due to length. Continue processing URL: {current_url}")
-        
-        # We append this to the trimmed list (temporarily for this invoke)
-        trimmed_messages.append(reminder)
-    # ----------------------------------------
+        print(f"--- INVOKING AGENT (Context: {len(trimmed_messages)} items) ---")
+        result = llm.invoke(trimmed_messages)
+        return {"messages": [result]}
 
-    print(f"--- INVOKING AGENT (Context: {len(trimmed_messages)} items) ---")
-    
-    result = llm.invoke(trimmed_messages)
-
-    return {"messages": [result]}
+    return agent_node
 
 
 # -------------------------------------------------
-# ROUTE LOGIC (UPDATED FOR MALFORMED CALLS)
+# ROUTE LOGIC
 # -------------------------------------------------
 def route(state):
     last = state["messages"][-1]
-    
-    # 1. CHECK FOR MALFORMED FUNCTION CALLS
-    if "finish_reason" in last.response_metadata:
+
+    if "finish_reason" in getattr(last, "response_metadata", {}):
         if last.response_metadata["finish_reason"] == "MALFORMED_FUNCTION_CALL":
             return "handle_malformed"
 
-    # 2. CHECK FOR VALID TOOLS
     tool_calls = getattr(last, "tool_calls", None)
     if tool_calls:
-        print("Route → tools")
+        print("Route -> tools")
         return "tools"
 
-    # 3. CHECK FOR END
     content = getattr(last, "content", None)
     if isinstance(content, str) and content.strip() == "END":
         return END
@@ -183,53 +193,136 @@ def route(state):
         if content[0].get("text", "").strip() == "END":
             return END
 
-    print("Route → agent")
+    print("Route -> agent")
     return "agent"
 
 
 # -------------------------------------------------
-# GRAPH
+# GRAPH FACTORY
 # -------------------------------------------------
-graph = StateGraph(AgentState)
+def build_app(llm):
+    graph = StateGraph(AgentState)
+    graph.add_node("agent", make_agent_node(llm))
+    graph.add_node("tools", ToolNode(TOOLS))
+    graph.add_node("handle_malformed", handle_malformed_node)
 
-# Add Nodes
-graph.add_node("agent", agent_node)
-graph.add_node("tools", ToolNode(TOOLS))
-graph.add_node("handle_malformed", handle_malformed_node) # Add the repair node
+    graph.add_edge(START, "agent")
+    graph.add_edge("tools", "agent")
+    graph.add_edge("handle_malformed", "agent")
 
-# Add Edges
-graph.add_edge(START, "agent")
-graph.add_edge("tools", "agent")
-graph.add_edge("handle_malformed", "agent") # Retry loop
+    graph.add_conditional_edges(
+        "agent",
+        route,
+        {
+            "tools": "tools",
+            "agent": "agent",
+            "handle_malformed": "handle_malformed",
+            END: END,
+        },
+    )
+    return graph.compile()
 
-# Conditional Edges
-graph.add_conditional_edges(
-    "agent", 
-    route,
-    {
-        "tools": "tools",
-        "agent": "agent",
-        "handle_malformed": "handle_malformed", # Map the new route
-        END: END
-    }
-)
 
-app = graph.compile()
+_default_app = None
+
+
+def get_default_app():
+    """Lazily build (and cache) the real Gemini-backed app."""
+    global _default_app
+    if _default_app is None:
+        _default_app = build_app(build_llm())
+    return _default_app
+
+
+# -------------------------------------------------
+# RUN STATE INIT
+# -------------------------------------------------
+def _init_run_state(url: str) -> None:
+    """Reset the process-global run state for a fresh quiz chain.
+
+    NOTE: this state is process-global (os.environ + module dicts), so only one
+    run can be active at a time. The API enforces this with a single-run guard.
+    """
+    from shared_store import BASE64_STORE
+
+    url_time.clear()
+    BASE64_STORE.clear()
+    os.environ["url"] = url
+    os.environ["offset"] = "0"
+    url_time[url] = time.time()
 
 
 # -------------------------------------------------
 # RUNNER
 # -------------------------------------------------
-def run_agent(url: str):
-    # system message is seeded ONCE here
+def run_agent(url: str, run_id: str | None = None, callbacks=None, app=None):
+    """Run the quiz chain to completion. Returns the final LangGraph state."""
+    _init_run_state(url)
+    active_app = app if app is not None else get_default_app()
+
     initial_messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": url}
+        {"role": "user", "content": url},
     ]
 
-    app.invoke(
-        {"messages": initial_messages},
-        config={"recursion_limit": RECURSION_LIMIT}
-    )
+    config: dict = {"recursion_limit": RECURSION_LIMIT}
+    if callbacks:
+        config["callbacks"] = callbacks
 
+    final_state = active_app.invoke({"messages": initial_messages}, config=config)
     print("Tasks completed successfully!")
+    return final_state
+
+
+def _extract_final_text(final_state) -> str:
+    try:
+        last = final_state["messages"][-1]
+        content = getattr(last, "content", "")
+        if isinstance(content, list):
+            return " ".join(
+                part.get("text", "") for part in content if isinstance(part, dict)
+            ).strip()
+        return str(content).strip()
+    except (KeyError, IndexError, AttributeError):
+        return ""
+
+
+@dataclass
+class RunOutcome:
+    success: bool
+    result: dict | None
+    metrics: RunMetrics
+    error: str | None
+
+
+def run_agent_instrumented(
+    url: str,
+    run_id: str,
+    app=None,
+    persist=None,
+    bus=event_bus,
+    model: str | None = None,
+) -> RunOutcome:
+    """Run a quiz chain with SSE events + metrics. Shared by API and eval.
+
+    ``success`` here means the chain *completed without error* (reached END).
+    Per-answer correctness is graded by the quiz server, not by this flag.
+    """
+    metrics = RunMetrics(model=model or settings.gemini_model)
+    handler = SSECallbackHandler(run_id, metrics, bus=bus, persist=persist)
+    handler.emit("status", name="started", url=url)
+    try:
+        final_state = run_agent(url, run_id=run_id, callbacks=[handler], app=app)
+        text = _extract_final_text(final_state)
+        result = {"final_message": text}
+        success = True
+        metrics.finish()
+        handler.emit("final", name="completed", success=success, result=result, **metrics.snapshot())
+        return RunOutcome(success=success, result=result, metrics=metrics, error=None)
+    except Exception as exc:  # noqa: BLE001 — surface any failure as a run outcome
+        metrics.finish()
+        handler.emit("error", name="run_failed", error=str(exc))
+        return RunOutcome(success=False, result=None, metrics=metrics, error=str(exc))
+    finally:
+        handler.emit("done")
+        bus.close(run_id)
