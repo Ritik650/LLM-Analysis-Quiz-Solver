@@ -1,7 +1,9 @@
-from langchain.tools import tool
-import speech_recognition as sr
-from pydub import AudioSegment
 import os
+
+import speech_recognition as sr
+from langchain.tools import tool
+from pydub import AudioSegment
+
 
 @tool
 def transcribe_audio(file_path: str) -> str:

@@ -1,7 +1,9 @@
+from urllib.parse import urljoin
+
+from bs4 import BeautifulSoup
 from langchain_core.tools import tool
 from playwright.sync_api import sync_playwright
-from bs4 import BeautifulSoup
-from urllib.parse import urljoin
+
 
 @tool
 def get_rendered_html(url: str) -> dict:

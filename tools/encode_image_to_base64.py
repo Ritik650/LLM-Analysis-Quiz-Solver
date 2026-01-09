@@ -1,7 +1,12 @@
-from shared_store import BASE64_STORE
+import base64
 import os
-import base64, uuid
+import uuid
+
 from langchain_core.tools import tool
+
+from shared_store import BASE64_STORE
+
+
 @tool
 def encode_image_to_base64(image_path: str) -> str:
     """
@@ -42,7 +47,7 @@ def encode_image_to_base64(image_path: str) -> str:
         image_path = os.path.join("LLMFiles", image_path)
         with open(image_path, "rb") as f:
             raw = f.read()
-    
+
         encoded = base64.b64encode(raw).decode("utf-8")
 
         key = str(uuid.uuid4())

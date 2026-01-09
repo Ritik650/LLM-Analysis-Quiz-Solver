@@ -1,8 +1,9 @@
-import pytesseract
-from PIL import Image
-from io import BytesIO
 import base64
 import os
+from io import BytesIO
+
+import pytesseract
+from PIL import Image
 
 
 def load_image(image_input):

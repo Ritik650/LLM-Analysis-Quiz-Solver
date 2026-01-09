@@ -1,11 +1,13 @@
-from langchain_core.tools import tool
-from shared_store import BASE64_STORE, url_time
-import time
-import os
-import requests
 import json
+import os
+import time
 from collections import defaultdict
 from typing import Any, Dict, Optional
+
+import requests
+from langchain_core.tools import tool
+
+from shared_store import BASE64_STORE, url_time
 
 cache = defaultdict(int)
 retry_limit = 4
@@ -58,10 +60,10 @@ def post_request(url: str, payload: Dict[str, Any], headers: Optional[Dict[str, 
         # Try to return JSON, fallback to raw text
         data = response.json()
         print("Got the response: \n", json.dumps(data, indent=4), '\n')
-        
+
         delay = time.time() - url_time.get(cur_url, time.time())
         print(delay)
-        next_url = data.get("url") 
+        next_url = data.get("url")
         if not next_url:
             return "Tasks completed"
         if next_url not in url_time:
@@ -73,15 +75,15 @@ def post_request(url: str, payload: Dict[str, Any], headers: Optional[Dict[str, 
             prev = url_time.get(next_url, time.time())
             if cache[cur_url] >= retry_limit or delay >= 180 or (prev != "0" and (cur_time - float(prev)) > 90): # Shouldn't retry
                 print("Not retrying, moving on to the next question")
-                data = {"url": data.get("url", "")} 
+                data = {"url": data.get("url", "")}
             else: # Retry
                 os.environ["offset"] = str(url_time.get(next_url, time.time()))
                 print("Retrying..")
                 data["url"] = cur_url
-                data["message"] = "Retry Again!" 
+                data["message"] = "Retry Again!"
         print("Formatted: \n", json.dumps(data, indent=4), '\n')
         forward_url = data.get("url", "")
-        os.environ["url"] = forward_url 
+        os.environ["url"] = forward_url
         if forward_url == next_url:
             os.environ["offset"] = "0"
 

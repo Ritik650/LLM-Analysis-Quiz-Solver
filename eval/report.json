@@ -1,0 +1,49 @@
+{
+  "total_tasks": 3,
+  "solved": 3,
+  "success_rate_pct": 100.0,
+  "latency_ms": {
+    "median": 944,
+    "p95": 1127.6,
+    "max": 1148
+  },
+  "avg_tokens_per_run": 2326,
+  "avg_cost_per_run_usd": 0.001173,
+  "tool_call_distribution": {
+    "download_file": 8,
+    "run_code": 8,
+    "post_request": 8
+  },
+  "per_task": [
+    {
+      "task": "arith",
+      "success": true,
+      "duration_ms": 944,
+      "total_tokens": 2540,
+      "tool_call_count": 9,
+      "error": null
+    },
+    {
+      "task": "single",
+      "success": true,
+      "duration_ms": 270,
+      "total_tokens": 840,
+      "tool_call_count": 3,
+      "error": null
+    },
+    {
+      "task": "longer",
+      "success": true,
+      "duration_ms": 1148,
+      "total_tokens": 3598,
+      "tool_call_count": 12,
+      "error": null
+    }
+  ],
+  "config": {
+    "model": "fake-quiz-model",
+    "mode": "fake-chat-model (deterministic)",
+    "generated_at": "2026-07-01 18:49:06 UTC",
+    "smoke": false
+  }
+}
