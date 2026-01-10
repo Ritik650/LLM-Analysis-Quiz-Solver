@@ -54,11 +54,24 @@ _run_lock = threading.Lock()
 _active_run_id: str | None = None
 
 
+def _redacted_db_url(url: str) -> str:
+    # Hide credentials before logging (e.g. the Supabase password).
+    if "://" in url and "@" in url:
+        scheme, rest = url.split("://", 1)
+        return f"{scheme}://***@{rest.split('@', 1)[1]}"
+    return url
+
+
 @app.on_event("startup")
 def _startup() -> None:
     init_db()
     configure_tracing()
-    log_json(logger, "api startup", model=settings.gemini_model, db=settings.database_url)
+    log_json(
+        logger,
+        "api startup",
+        model=settings.gemini_model,
+        db=_redacted_db_url(settings.database_url),
+    )
 
 
 @app.get("/healthz")
