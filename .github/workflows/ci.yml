@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend:
+    name: Lint · Test · Eval smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies (with dev extras)
+        run: uv sync --extra dev
+
+      - name: Lint (ruff)
+        run: uv run ruff check .
+
+      - name: Unit + integration + e2e tests
+        run: uv run pytest -q
+
+      - name: Eval smoke (regression check)
+        run: uv run python -m eval.run_eval --smoke
+
+  frontend:
+    name: Frontend build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm ci
+      - run: npm run build
+
+  docker:
+    name: Build backend image
+    runs-on: ubuntu-latest
+    needs: [backend]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image (no push)
+        run: docker build -t quiz-solver-agent:ci .
+
+  deploy:
+    name: Deploy (guarded)
+    runs-on: ubuntu-latest
+    needs: [backend, frontend, docker]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # Backend -> Hugging Face Space. No-ops unless HF_TOKEN/HF_SPACE are set,
+      # so forks and unconfigured repos pass without a real deploy.
+      - name: Push to Hugging Face Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE: ${{ secrets.HF_SPACE }}
+        run: |
+          if [ -z "$HF_TOKEN" ] || [ -z "$HF_SPACE" ]; then
+            echo "HF_TOKEN/HF_SPACE not set — skipping backend deploy."
+            exit 0
+          fi
+          git config user.email "ci@users.noreply.github.com"
+          git config user.name "CI"
+          git remote add space "https://user:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE}"
+          git push --force space HEAD:main
+      # Frontend -> Vercel. Also guarded on VERCEL_TOKEN.
+      - name: Deploy frontend to Vercel
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          if [ -z "$VERCEL_TOKEN" ]; then
+            echo "VERCEL_TOKEN not set — skipping frontend deploy (use the Vercel Git integration instead)."
+            exit 0
+          fi
+          npx --yes vercel deploy --prod --yes --cwd frontend --token "$VERCEL_TOKEN"

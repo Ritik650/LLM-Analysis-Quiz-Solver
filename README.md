@@ -8,384 +8,303 @@ pinned: false
 app_port: 7860
 ---
 
-# LLM Analysis - Autonomous Quiz Solver Agent
+# Autonomous Quiz Solver Agent
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.121.3+-green.svg)](https://fastapi.tiangolo.com/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.121+-green.svg)](https://fastapi.tiangolo.com/)
+[![React](https://img.shields.io/badge/React-18-61dafb.svg)](https://react.dev/)
 
-An intelligent, autonomous agent built with LangGraph and LangChain that solves data-related quizzes involving web scraping, data processing, analysis, and visualization tasks. The system uses Google's Gemini 2.5 Flash model to orchestrate tool usage and make decisions.
+A full-stack, observable, autonomous agent that solves multi-step data quizzes.
+A **LangGraph** state machine driving **Gemini** navigates a chain of quiz pages
+— scraping, downloading, writing & running code, and submitting answers — while
+a **React dashboard streams every reasoning step and tool call live** over
+Server-Sent Events.
+
+> **v2 turned a backend-only prototype into a shipped product**: a live SSE
+> dashboard (E1), run persistence + history (E2), token/cost/latency
+> observability (E3), JWT + API-key auth (E4), a hardened code sandbox (E5), an
+> evaluation harness with measured metrics (E6), and a full test suite + CI (E7).
 
 ## 📋 Table of Contents
 
-- [Overview](#overview)
-- [Architecture](#architecture)
-- [Features](#features)
-- [Project Structure](#project-structure)
-- [Installation](#installation)
-- [Configuration](#configuration)
-- [Usage](#usage)
-- [API Endpoints](#api-endpoints)
-- [Tools &amp; Capabilities](#tools--capabilities)
-- [Docker Deployment](#docker-deployment)
-- [How It Works](#how-it-works)
-- [License](#license)
+- [Architecture](#-architecture)
+- [Feature highlights](#-feature-highlights)
+- [Project structure](#-project-structure)
+- [Quick start](#-quick-start)
+- [Configuration](#-configuration)
+- [Authentication (E4)](#-authentication-e4)
+- [API reference](#-api-reference)
+- [Live dashboard (E1)](#-live-dashboard-e1)
+- [Persistence (E2)](#-persistence-e2)
+- [Observability (E3)](#-observability-e3)
+- [Sandbox hardening & threat model (E5)](#-sandbox-hardening--threat-model-e5)
+- [Evaluation harness & measured metrics (E6)](#-evaluation-harness--measured-metrics-e6)
+- [Tests & CI (E7)](#-tests--ci-e7)
+- [Deployment](#-deployment)
+- [Known limitations](#-known-limitations)
+- [License](#-license)
 
-## 🔍 Overview
-
-This project was developed for the TDS (Tools in Data Science) course project, where the objective is to build an application that can autonomously solve multi-step quiz tasks involving:
-
-- **Data sourcing**: Scraping websites, calling APIs, downloading files
-- **Data preparation**: Cleaning text, PDFs, and various data formats
-- **Data analysis**: Filtering, aggregating, statistical analysis, ML models
-- **Data visualization**: Generating charts, narratives, and presentations
-
-The system receives quiz URLs via a REST API, navigates through multiple quiz pages, solves each task using LLM-powered reasoning and specialized tools, and submits answers back to the evaluation server.
-
-## 🏗️ Architecture
-
-The project uses a **LangGraph state machine** architecture with the following components:
+## 🏗 Architecture
 
 ```
-┌─────────────┐
-│   FastAPI   │  ← Receives POST requests with quiz URLs
-│   Server    │
-└──────┬──────┘
-       │
-       ▼
-┌─────────────┐
-│   Agent     │  ← LangGraph orchestrator with Gemini 2.5 Flash
-│   (LLM)     │
-└──────┬──────┘
-       │
-       ├────────────┬────────────┬─────────────┬──────────────┐
-       ▼            ▼            ▼             ▼              ▼
-   [Scraper]   [Downloader]  [Code Exec]  [POST Req]  [Add Deps]
+        ┌───────────────────────────┐          Vercel
+        │   React + Vite dashboard   │  ◀── live SSE trace, history, auth
+        └─────────────┬─────────────┘
+                      │ POST /auth/login → JWT
+                      │ POST /solve → { run_id }
+                      │ EventSource /runs/{id}/stream?token=JWT
+                      ▼
+        ┌───────────────────────────┐          Hugging Face Space (Docker, :7860)
+        │        FastAPI app         │
+        │  ┌──────────────────────┐  │
+        │  │ auth/  JWT + API keys │  │
+        │  │ persistence/  SQLA    │──┼──▶ SQLite (local) / Postgres · Supabase
+        │  │ observability/  bus + │  │
+        │  │   callbacks + metrics │──┼──▶ structured JSON logs · LangSmith (opt)
+        │  └──────────┬───────────┘  │
+        │             ▼              │
+        │   agent.py  LangGraph      │
+        │   ┌───────┐    ┌───────┐   │
+        │   │ agent │◀──▶│ tools │   │  run_code (sandboxed), scraper,
+        │   └───────┘    └───────┘   │  downloader, POST, OCR, transcribe…
+        └───────────────────────────┘
 ```
 
-### Key Components:
+The agent loop is unchanged in spirit — `agent` (LLM) ↔ `tools` with
+malformed-call repair and timeout handling — but every node transition, LLM
+call, and tool call now emits an event that is **streamed** to the browser and
+**persisted** as a step.
 
-1. **FastAPI Server** (`main.py`): Handles incoming POST requests, validates secrets, and triggers the agent
-2. **LangGraph Agent** (`agent.py`): State machine that coordinates tool usage and decision-making
-3. **Tools Package** (`tools/`): Modular tools for different capabilities
-4. **LLM**: Google Gemini 2.5 Flash with rate limiting (9 requests per minute)
+## ✨ Feature highlights
 
-## ✨ Features
+| # | Enhancement | What it adds |
+|---|-------------|--------------|
+| E1 | **Live dashboard** | React/Vite SPA streaming reasoning, tool calls, progress, answers, live tokens + elapsed timer via SSE |
+| E2 | **Persistence** | Every run stored (URL, step trace, tokens, cost, duration, success) with `GET /runs` + history view |
+| E3 | **Observability** | Per-run token/cost/latency/tool-call metrics, structured JSON logs, optional LangSmith tracing |
+| E4 | **Auth** | JWT access tokens, per-user hashed API keys, protected `/solve` + `/runs` (legacy shared-secret kept for back-compat) |
+| E5 | **Sandbox hardening** | `run_code` runs under wall-clock + CPU + fd limits with an optional network guard; documented threat model |
+| E6 | **Eval harness** | Deterministic mock quiz + FakeChatModel → success-rate / latency / token report (`--smoke` for CI) |
+| E7 | **Tests + CI** | Unit / integration / e2e tests + GitHub Actions (lint → test → eval → build → guarded deploy) |
 
-- ✅ **Autonomous multi-step problem solving**: Chains together multiple quiz pages
-- ✅ **Dynamic JavaScript rendering**: Uses Playwright for client-side rendered pages
-- ✅ **Code generation & execution**: Writes and runs Python code for data tasks
-- ✅ **Flexible data handling**: Downloads files, processes PDFs, CSVs, images, etc.
-- ✅ **Self-installing dependencies**: Automatically adds required Python packages
-- ✅ **Robust error handling**: Retries failed attempts within time limits
-- ✅ **Docker containerization**: Ready for deployment on HuggingFace Spaces or cloud platforms
-- ✅ **Rate limiting**: Respects API quotas with exponential backoff
-
-## 📁 Project Structure
+## 📁 Project structure
 
 ```
 LLM-Analysis-TDS-Project-2/
-├── agent.py                    # LangGraph state machine & orchestration
-├── main.py                     # FastAPI server with /solve endpoint
-├── pyproject.toml              # Project dependencies & configuration
-├── Dockerfile                  # Container image with Playwright
-├── .env                        # Environment variables (not in repo)
-├── tools/
-│   ├── __init__.py
-│   ├── web_scraper.py          # Playwright-based HTML renderer
-│   ├── code_generate_and_run.py # Python code executor
-│   ├── download_file.py        # File downloader
-│   ├── send_request.py         # HTTP POST tool
-│   └── add_dependencies.py     # Package installer
+├── agent.py                 # LangGraph orchestrator (LLM factory + instrumented runner)
+├── main.py                  # FastAPI: /solve, /runs, SSE stream, auth wiring
+├── config.py                # Central env-driven settings
+├── shared_store.py          # Process-global run state (BASE64 + timing)
+├── auth/                    # JWT issue/verify, API keys, FastAPI deps + routes
+├── persistence/             # SQLAlchemy engine, models, repositories
+├── observability/           # Event bus, SSE callback handler, metrics, tracing
+├── tools/                   # 8 tools (run_code hardened for E5)
+├── eval/                    # Mock quiz server, FakeChatModel, harness, report
+├── frontend/                # React + Vite + TS dashboard (SSE live trace)
+├── tests/                   # unit / integration / e2e
+├── .github/workflows/ci.yml # lint → test → eval → build → deploy (guarded)
+├── Dockerfile               # backend image (HF Spaces, :7860)
 └── README.md
 ```
 
-## 📦 Installation
+## 🚀 Quick start
 
-### Prerequisites
-
-- Python 3.12 or higher
-- [uv](https://github.com/astral-sh/uv) package manager (recommended) or pip
-- Git
-
-### Step 1: Clone the Repository
+### Backend
 
 ```bash
-git clone https://github.com/saivijayragav/LLM-Analysis-TDS-Project-2.git
-cd LLM-Analysis-TDS-Project-2
-```
-
-### Step 2: Install Dependencies
-
-#### Option A: Using `uv` (Recommended)
-
-
-Ensure you have uv installed, then sync the project:
-
-```
-# Install uv if you haven't already  
 pip install uv
-
-# Sync dependencies  
 uv sync
-uv run playwright install chromium
+uv run playwright install chromium      # only needed for live web scraping
+cp .env.example .env                     # fill in GOOGLE_API_KEY, JWT_SECRET, …
+uv run main.py                           # http://0.0.0.0:7860
 ```
 
-Start the FastAPI server:
-```
-uv run main.py
-```
-The server will start at ```http://0.0.0.0:7860```.
-
-#### Option B: Using `pip`
+### Frontend
 
 ```bash
-# Create virtual environment
-python -m venv venv
-.\venv\Scripts\activate  # Windows
-# source venv/bin/activate  # macOS/Linux
+cd frontend
+npm install
+npm run dev                              # http://localhost:5173 (proxies to :7860)
+```
 
-# Install dependencies
-pip install -e .
+Register in the UI, paste a quiz URL, and watch the agent solve it live.
 
-# Install Playwright browsers
-playwright install chromium
+### Try it end-to-end with the mock quiz (no Gemini key needed)
+
+```bash
+uv run python -m eval.mock_quiz          # prints start URLs like .../q/arith/1
+# submit one of those URLs from the dashboard, or:
+uv run python -m eval.run_eval --smoke   # runs the agent against the mock server
 ```
 
 ## ⚙️ Configuration
 
-### Environment Variables
+All settings come from environment variables (see [.env.example](.env.example)):
 
-Create a `.env` file in the project root:
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `GOOGLE_API_KEY` | — | Gemini API key (real runs) |
+| `GEMINI_MODEL` | `gemini-3-pro` | Model id |
+| `JWT_SECRET` | *(ephemeral)* | **Set in prod.** Signs access tokens |
+| `JWT_EXPIRE_MINUTES` | `1440` | Token lifetime |
+| `DATABASE_URL` | `sqlite:///./data/runs.db` | SQLite locally, `postgresql+psycopg2://…` for Supabase |
+| `ALLOW_LEGACY_SECRET` | `true` | Accept the deprecated shared `SECRET` on `/solve` |
+| `ALLOWED_ORIGINS` | `*` | CORS origins (comma-separated) |
+| `RUN_CODE_TIMEOUT` | `120` | Wall-clock limit (s) for generated code |
+| `RUN_CODE_CPU_SECONDS` | `60` | CPU-time limit (POSIX) |
+| `RUN_CODE_ENFORCE_MEM` | `false` | Enable `RLIMIT_AS` memory cap (off — breaks numpy/pandas) |
+| `RUN_CODE_ALLOW_NETWORK` | `true` | Allow generated code network access |
+| `LANGCHAIN_TRACING_V2` | `false` | Enable LangSmith tracing |
 
-```env
-# Your credentials from the Google Form submission
-EMAIL=your.email@example.com
-SECRET=your_secret_string
+## 🔐 Authentication (E4)
 
-# Google Gemini API Key
-GOOGLE_API_KEY=your_gemini_api_key_here
-```
-
-### Getting a Gemini API Key
-
-1. Visit [Google AI Studio](https://aistudio.google.com/app/apikey)
-2. Create a new API key
-3. Copy it to your `.env` file
-
-## 🚀 Usage
-
-### Local Development
-
-Start the FastAPI server:
+Self-contained JWT + per-user API keys. Passwords are bcrypt-hashed; API keys
+are shown once and stored only as SHA-256 hashes.
 
 ```bash
-# If using uv
-uv run main.py
+# Register (returns a JWT)
+curl -sX POST localhost:7860/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"me@example.com","password":"password123"}'
 
-# If using standard Python
-python main.py
+# Use the token
+TOKEN=... # access_token from above
+curl -sX POST localhost:7860/solve \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"https://quiz-server/quiz/1"}'
+
+# Create an API key for programmatic use
+curl -sX POST localhost:7860/auth/api-keys \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"name":"ci"}'
+# → use it as:  -H "X-API-Key: qk_..."
 ```
 
-The server will start on `http://0.0.0.0:7860`
+> The production deployment path uses **Supabase Auth** (Postgres + hosted JWT);
+> this self-issued scheme is fully offline-testable and interchangeable — swap
+> `auth/dependencies.py` to verify Supabase JWTs against its JWKS.
 
-### Testing the Endpoint
+## 📡 API reference
 
-Send a POST request to test your setup:
+| Method & path | Auth | Description |
+|---------------|------|-------------|
+| `POST /auth/register` | — | Create user, return JWT |
+| `POST /auth/login` | — | Return JWT |
+| `GET /auth/me` | Bearer/API key | Current user |
+| `POST /auth/api-keys` · `GET` · `DELETE /{id}` | Bearer/API key | Manage API keys |
+| `POST /solve` | Bearer / API key / legacy secret | Start a run → `{ run_id }` (202) |
+| `GET /runs` | Bearer/API key | List your runs |
+| `GET /runs/{id}` | Bearer/API key | Full run detail + step trace |
+| `GET /runs/{id}/stream?token=…` | JWT/API key via query | **SSE** live/replayed trace |
+| `GET /healthz` | — | Liveness |
+
+## 📊 Live dashboard (E1)
+
+The dashboard opens an `EventSource` to `/runs/{id}/stream`. The backend fans
+each `AgentEvent` (reasoning, `tool`, `tool_result`, `token`, `final`) out to a
+thread-safe queue; the stream **replays persisted steps first** (so late/refresh
+connections still see the whole run) then streams live until a `done` sentinel.
+It shows a colour-coded trace timeline, a live token counter, an elapsed timer,
+estimated cost, and a per-user run-history panel you can click to replay.
+
+## 💾 Persistence (E2)
+
+SQLAlchemy models — `User`, `ApiKey`, `Run`, `Step` — run on **SQLite** with
+zero setup and on **Postgres/Supabase** by setting `DATABASE_URL`. Each run
+records the URL, timestamped step trace, tool calls, final result, success flag,
+token/cost totals, and duration.
+
+## 🔭 Observability (E3)
+
+`observability/` provides an `SSECallbackHandler` (a LangChain callback) that
+accumulates a `RunMetrics` object — prompt/completion tokens, estimated cost
+(model-aware pricing table), wall-clock latency, and a tool-call distribution —
+surfaced on `/runs/{id}` and the dashboard, and emitted as structured JSON logs.
+Set `LANGCHAIN_TRACING_V2=true` + `LANGCHAIN_API_KEY` for full LangSmith traces.
+
+## 🛡 Sandbox hardening & threat model (E5)
+
+`run_code` executes arbitrary LLM-generated Python — treated as **untrusted**.
+
+**Controls applied** (see [tools/run_code.py](tools/run_code.py)):
+
+- **Wall-clock timeout** (portable) — process killed past `RUN_CODE_TIMEOUT`.
+- **CPU-time limit** — `RLIMIT_CPU` (POSIX) stops busy loops.
+- **File-descriptor limit** — `RLIMIT_NOFILE`.
+- **Memory cap** — `RLIMIT_AS`, opt-in (`RUN_CODE_ENFORCE_MEM`) because address-space caps break numpy/pandas.
+- **Network guard** — best-effort socket block when `RUN_CODE_ALLOW_NETWORK=false`.
+- **Isolated working dir** (`LLMFiles/`) and output truncation.
+
+**Residual risk (honest):** without a nested container / nsjail, filesystem and
+network isolation are best-effort — generated code shares the container's
+filesystem and, by default, its network. In production, run the executor in a
+locked-down sidecar (nsjail, gVisor, or a per-run container) with an egress
+allow-list. On Windows dev, POSIX rlimits don't apply and only the wall-clock
+timeout is enforced.
+
+## 🧪 Evaluation harness & measured metrics (E6)
+
+`eval/` ships a deterministic **mock quiz server** and a **FakeChatModel** that
+drives the real graph + real tools (`download_file` → `run_code` → `post_request`),
+so runs are reproducible with no API key.
 
 ```bash
-curl -X POST http://localhost:7860/solve \
-  -H "Content-Type: application/json" \
-  -d '{
-    "email": "your.email@example.com",
-    "secret": "your_secret_string",
-    "url": "https://tds-llm-analysis.s-anand.net/demo"
-  }'
+uv run python -m eval.run_eval          # full suite → eval/report.{json,md}
+uv run python -m eval.run_eval --smoke  # single chain (CI)
+uv run python -m eval.run_eval --real   # real Gemini (needs GOOGLE_API_KEY)
 ```
 
-Expected response:
+**Measured results** (deterministic FakeChatModel harness — real numbers from an
+actual run, exercising the full agent + tool + persistence + metrics pipeline;
+these gauge the *plumbing*, not Gemini's reasoning):
 
-```json
-{
-  "status": "ok"
-}
-```
+| Metric | Value |
+|--------|-------|
+| Success rate | **100% (3/3 chains)** |
+| Median latency | **944 ms** |
+| p95 latency | **1128 ms** |
+| Avg tokens / run | **2,326** |
+| Avg est. cost / run | **$0.0012** |
+| Tool-call distribution | `download_file`×8, `run_code`×8, `post_request`×8 |
 
-The agent will run in the background and solve the quiz chain autonomously.
+> **Real-Gemini metrics** require a `GOOGLE_API_KEY` and are intentionally *not*
+> estimated here. Reproduce with `uv run python -m eval.run_eval --real` against
+> the mock server (or real quiz URLs) and paste the emitted table.
 
-## 🌐 API Endpoints
+## ✅ Tests & CI (E7)
 
-### `POST /solve`
+29 tests — run `uv run pytest`:
 
-Receives quiz tasks and triggers the autonomous agent.
+- **unit** — auth (bcrypt/JWT/API keys), tools (mocked network/subprocess + the sandbox timeout), metrics, event bus, persistence repositories.
+- **integration** — one full agent loop against the mock quiz, asserting the run is solved, persisted, and emits events.
+- **e2e** — TestClient: register → login → `/solve` → poll `/runs/{id}` → assert success + SSE replay (Gemini swapped for the FakeChatModel).
 
-**Request Body:**
+[CI](.github/workflows/ci.yml) runs **lint (ruff) → test → eval smoke → build
+backend image → build frontend → guarded deploy** on every push to `main`.
 
-```json
-{
-  "email": "your.email@example.com",
-  "secret": "your_secret_string",
-  "url": "https://example.com/quiz-123"
-}
-```
+## 🌐 Deployment
 
-**Responses:**
+| Piece | Host |
+|-------|------|
+| FastAPI + LangGraph + Gemini + Playwright | **Hugging Face Spaces** (Docker, already configured for :7860) |
+| React/Vite dashboard | **Vercel** (`frontend/`, `VITE_API_BASE` → the HF Space) |
+| Auth + run history | **Supabase** (Postgres via `DATABASE_URL`; Supabase Auth optional) |
 
-| Status Code | Description                    |
-| ----------- | ------------------------------ |
-| `200`     | Secret verified, agent started |
-| `400`     | Invalid JSON payload           |
-| `403`     | Invalid secret                 |
+HF's 16 GB RAM handles Chromium comfortably. The dashboard on Vercel only serves
+the UI and streams the SSE trace — all agent work runs on HF (Vercel's 10 s
+function timeout never applies to the long-running solve).
 
-### `GET /healthz`
+## ⚠️ Known limitations
 
-Health check endpoint for monitoring.
-
-**Response:**
-
-```json
-{
-  "status": "ok",
-  "uptime_seconds": 3600
-}
-```
-
-## 🛠️ Tools & Capabilities
-
-The agent has access to the following tools:
-
-### 1. **Web Scraper** (`get_rendered_html`)
-
-- Uses Playwright to render JavaScript-heavy pages
-- Waits for network idle before extracting content
-- Returns fully rendered HTML for parsing
-
-### 2. **File Downloader** (`download_file`)
-
-- Downloads files (PDFs, CSVs, images, etc.) from direct URLs
-- Saves files to `LLMFiles/` directory
-- Returns the saved filename
-
-### 3. **Code Executor** (`run_code`)
-
-- Executes arbitrary Python code in an isolated subprocess
-- Returns stdout, stderr, and exit code
-- Useful for data processing, analysis, and visualization
-
-### 4. **POST Request** (`post_request`)
-
-- Sends JSON payloads to submission endpoints
-- Includes automatic error handling and response parsing
-- Prevents resubmission if answer is incorrect and time limit exceeded
-
-### 5. **Dependency Installer** (`add_dependencies`)
-
-- Dynamically installs Python packages as needed
-- Uses `uv add` for fast package resolution
-- Enables the agent to adapt to different task requirements
-
-## 🐳 Docker Deployment
-
-### Build the Image
-
-```bash
-docker build -t llm-analysis-agent .
-```
-
-### Run the Container
-
-```bash
-docker run -p 7860:7860 \
-  -e EMAIL="your.email@example.com" \
-  -e SECRET="your_secret_string" \
-  -e GOOGLE_API_KEY="your_api_key" \
-  llm-analysis-agent
-```
-
-### Deploy to HuggingFace Spaces
-
-1. Create a new Space with Docker SDK
-2. Push this repository to your Space
-3. Add secrets in Space settings:
-   - `EMAIL`
-   - `SECRET`
-   - `GOOGLE_API_KEY`
-4. The Space will automatically build and deploy
-
-## 🧠 How It Works
-
-### 1. Request Reception
-
-- FastAPI receives a POST request with quiz URL
-- Validates the secret against environment variables
-- Returns 200 OK and starts the agent in the background
-
-### 2. Agent Initialization
-
-- LangGraph creates a state machine with two nodes: `agent` and `tools`
-- The initial state contains the quiz URL as a user message
-
-### 3. Task Loop
-
-The agent follows this loop:
-
-```
-┌─────────────────────────────────────────┐
-│ 1. LLM analyzes current state           │
-│    - Reads quiz page instructions       │
-│    - Plans tool usage                   │
-└─────────────────┬───────────────────────┘
-                  ▼
-┌─────────────────────────────────────────┐
-│ 2. Tool execution                       │
-│    - Scrapes page / downloads files     │
-│    - Runs analysis code                 │
-│    - Submits answer                     │
-└─────────────────┬───────────────────────┘
-                  ▼
-┌─────────────────────────────────────────┐
-│ 3. Response evaluation                  │
-│    - Checks if answer is correct        │
-│    - Extracts next quiz URL (if exists) │
-└─────────────────┬───────────────────────┘
-                  ▼
-┌─────────────────────────────────────────┐
-│ 4. Decision                             │
-│    - If new URL exists: Loop to step 1  │
-│    - If no URL: Return "END"            │
-└─────────────────────────────────────────┘
-```
-
-### 4. State Management
-
-- All messages (user, assistant, tool) are stored in state
-- The LLM uses full history to make informed decisions
-- Recursion limit set to 200 to handle long quiz chains
-
-### 5. Completion
-
-- Agent returns "END" when no new URL is provided
-- Background task completes
-- Logs indicate success or failure
-
-## 📝 Key Design Decisions
-
-1. **LangGraph over Sequential Execution**: Allows flexible routing and complex decision-making
-2. **Background Processing**: Prevents HTTP timeouts for long-running quiz chains
-3. **Tool Modularity**: Each tool is independent and can be tested/debugged separately
-4. **Rate Limiting**: Prevents API quota exhaustion (9 req/min for Gemini)
-5. **Code Execution**: Dynamically generates and runs Python for complex data tasks
-6. **Playwright for Scraping**: Handles JavaScript-rendered pages that `requests` cannot
-7. **uv for Dependencies**: Fast package resolution and installation
+- **One active run at a time.** The agent keeps process-global URL/timing state
+  (`os.environ` + module dicts), so `/solve` returns `409` while a run is active.
+  Full concurrency would require threading run state through the graph — future work.
+- **Sandbox isolation is best-effort** without a nested container (see threat model).
+- **Cost figures are estimates** from a model-pricing table; free-tier usage is $0.
 
 ## 📄 License
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+MIT — see [LICENSE](LICENSE).
 
----
-
-**Author**: Sai Vijay Ragav 
-**Course**: Tools in Data Science (TDS)
-**Institution**: IIT Madras
-
-For questions or issues, please open an issue on the [GitHub repository](https://github.com/saivijayragav/LLM-Analysis-TDS-Project-2).
+**Course**: Tools in Data Science (TDS), IIT Madras.
